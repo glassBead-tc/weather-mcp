@@ -101,14 +101,7 @@ async def compare_weather(cities: list[str], metric: str = "temperature") -> Dic
     return {"metric": metric, "cities": comparisons}
 
 if __name__ == "__main__":
-    # Smart transport detection - works with both Smithery and local deployment
-    import sys
-    import os
-    
-    # Check if we're running in a container/production environment
-    # Smithery will set this to stdio via sed, so we respect that
-    if os.getenv("SMITHERY_DEPLOYMENT") or "--stdio" in sys.argv:
-        mcp.run(transport="stdio")
-    else:
-        # Default to streamable-http for development/HTTP deployment  
-        mcp.run(transport="streamable-http")
+    # Smithery requires streamable-http transport for hosted servers
+    # This is the correct transport for Smithery deployment
+    print("🌐 Using streamable-http transport for Smithery deployment")
+    mcp.run(transport="streamable-http")
