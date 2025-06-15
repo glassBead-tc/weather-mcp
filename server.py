@@ -214,4 +214,4 @@ def clear_cache(cache_type: Optional[str] = None) -> Dict[str, Any]:
         return {"cleared": cleared_count, "type": "all"}
 
 if __name__ == "__main__":
-    mcp.run(transport="shttp")
+    mcp.run(transport="streamable-http")
