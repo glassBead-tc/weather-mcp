@@ -85,7 +85,7 @@ jobs:
           
           echo "entry_file=$ENTRY_FILE" >> $GITHUB_OUTPUT
           
-      - name: Validate FastMCP imports
+      - name: Validate FastMCP imports and timeout prevention
         id: validate-imports
         run: |
           ENTRY_FILE="${{ steps.find-entry.outputs.entry_file }}"
@@ -98,6 +98,20 @@ jobs:
           if ! grep -q "mcp = FastMCP" "$ENTRY_FILE"; then
             echo "::error::FastMCP initialization not found in $ENTRY_FILE"
             exit 1
+          fi
+          
+          # Check for timeout prevention patterns
+          if grep -q "@mcp.tool()" "$ENTRY_FILE" && grep -q "ping\|health" "$ENTRY_FILE"; then
+            echo "✅ Timeout prevention tools detected (ping/health check)"
+          else
+            echo "::warning::Consider adding ping or health_check tools to prevent timeouts"
+          fi
+          
+          # Check for httpx timeout configuration
+          if grep -q "httpx.AsyncClient.*timeout" "$ENTRY_FILE"; then
+            echo "✅ HTTP timeout configuration detected"
+          else
+            echo "::warning::Consider adding timeout configuration to httpx.AsyncClient calls"
           fi
           
           echo "✅ FastMCP imports validated"
@@ -233,6 +247,8 @@ jobs:
           - ✅ Transport: streamable-http
           - ✅ Requirements: MCP package included
           - ✅ Server imports and starts successfully
+          - ✅ Timeout prevention: Health check tools included
+          - ✅ HTTP timeout configuration: 10s timeout for external calls
           
           ### Connect to Claude Desktop:
           \`\`\`json

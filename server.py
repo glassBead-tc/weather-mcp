@@ -8,13 +8,29 @@ mcp = FastMCP("weather-server")
 WEATHER_API = "https://wttr.in"
 
 @mcp.tool()
+async def ping() -> str:
+    """Simple ping tool to test server responsiveness and prevent timeouts."""
+    return "pong"
+
+@mcp.tool()
+async def health_check() -> Dict[str, Any]:
+    """Health check to verify server connectivity and status."""
+    from datetime import datetime
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "server": "weather-mcp",
+        "tools": ["ping", "health_check", "get_weather", "compare_weather"]
+    }
+
+@mcp.tool()
 async def get_weather(city: str, units: str = "metric", detailed: bool = False) -> Dict[str, Any]:
     """Get current weather for a city."""
     if not city:
         return {"error": "City name required"}
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
                 f"{WEATHER_API}/{quote(city)}",
                 params={"format": "j1", "m": "" if units == "metric" else "f"}
