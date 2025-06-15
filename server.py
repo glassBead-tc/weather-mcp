@@ -9,4 +9,4 @@ def ping() -> Dict[str, Any]:
     return {"message": "Hello from ultra-minimal MCP server!", "status": "active"}
 
 if __name__ == "__main__":
-    mcp.run(transport="shttp")
+    mcp.run(transport="streamable-http")
