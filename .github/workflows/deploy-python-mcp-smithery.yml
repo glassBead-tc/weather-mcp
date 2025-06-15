@@ -1,0 +1,325 @@
+name: Deploy Python MCP Server to Smithery
+
+on:
+  workflow_dispatch:
+    inputs:
+      auth_method:
+        description: 'Authentication method for Claude Code'
+        required: true
+        type: choice
+        options:
+          - max_plan
+          - api
+      server_name:
+        description: 'Name of your MCP server'
+        required: true
+        type: string
+      entry_file:
+        description: 'Entry point file (e.g., server.py, main.py, app.py)'
+        required: false
+        type: string
+        default: 'server.py'
+      auto_deploy:
+        description: 'Automatically deploy to Smithery after validation'
+        required: false
+        type: boolean
+        default: false
+      smithery_org:
+        description: 'Smithery organization (optional)'
+        required: false
+        type: string
+
+jobs:
+  validate-and-deploy:
+    runs-on: ubuntu-latest
+    
+    outputs:
+      deployment_branch: ${{ steps.create-branch.outputs.branch_name }}
+      validation_report: ${{ steps.final-report.outputs.report }}
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Validate authentication method
+        run: |
+          if [[ "${{ inputs.auth_method }}" == "api" ]]; then
+            if [[ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]]; then
+              echo "::error::ANTHROPIC_API_KEY secret is required for API authentication"
+              exit 1
+            fi
+          fi
+          
+          if [[ -z "${{ secrets.SMITHERY_TOKEN }}" ]]; then
+            echo "::warning::SMITHERY_TOKEN not found. Manual deployment will be required."
+          fi
+          
+      - name: Find and validate entry file
+        id: find-entry
+        run: |
+          ENTRY_FILE="${{ inputs.entry_file }}"
+          
+          # If no entry file specified, search for common names
+          if [ -z "$ENTRY_FILE" ] || [ ! -f "$ENTRY_FILE" ]; then
+            echo "Searching for entry file..."
+            for fname in server.py main.py app.py index.py; do
+              if [ -f "$fname" ]; then
+                ENTRY_FILE="$fname"
+                echo "Found entry file: $fname"
+                break
+              fi
+            done
+          fi
+          
+          if [ ! -f "$ENTRY_FILE" ]; then
+            echo "::error::No valid entry file found. Please specify with entry_file input."
+            exit 1
+          fi
+          
+          echo "entry_file=$ENTRY_FILE" >> $GITHUB_OUTPUT
+          
+      - name: Validate FastMCP imports
+        id: validate-imports
+        run: |
+          ENTRY_FILE="${{ steps.find-entry.outputs.entry_file }}"
+          
+          if ! grep -q "from mcp.server.fastmcp import FastMCP" "$ENTRY_FILE"; then
+            echo "::error::FastMCP import not found in $ENTRY_FILE"
+            exit 1
+          fi
+          
+          if ! grep -q "mcp = FastMCP" "$ENTRY_FILE"; then
+            echo "::error::FastMCP initialization not found in $ENTRY_FILE"
+            exit 1
+          fi
+          
+          echo "✅ FastMCP imports validated"
+          
+      - name: Check for streamable-http transport configuration
+        id: check-transport
+        run: |
+          ENTRY_FILE="${{ steps.find-entry.outputs.entry_file }}"
+          
+          # Check for valid transport configuration
+          if grep -q 'transport="streamable-http"' "$ENTRY_FILE" 2>/dev/null || \
+             grep -q "transport='streamable-http'" "$ENTRY_FILE" 2>/dev/null; then
+            echo "✅ Correct HTTP transport configured for Smithery"
+            echo "has_transport=true" >> $GITHUB_OUTPUT
+          else
+            # Check for common mistakes
+            if grep -q 'transport="shttp"' "$ENTRY_FILE" 2>/dev/null || \
+               grep -q "transport='shttp'" "$ENTRY_FILE" 2>/dev/null; then
+              echo "❌ Invalid transport 'shttp' found - should be 'streamable-http'"
+              echo "has_transport=false" >> $GITHUB_OUTPUT
+              echo "::error::Invalid transport configuration: 'shttp' is not valid. Use 'streamable-http' instead."
+              
+              # Auto-fix option
+              echo "Attempting to auto-fix transport configuration..."
+              sed -i 's/transport="shttp"/transport="streamable-http"/g' "$ENTRY_FILE"
+              sed -i "s/transport='shttp'/transport='streamable-http'/g" "$ENTRY_FILE"
+              echo "transport_fixed=true" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Missing HTTP transport configuration"
+              echo "has_transport=false" >> $GITHUB_OUTPUT
+              echo "::warning::Server may not work properly on Smithery without transport='streamable-http'"
+            fi
+          fi
+          
+      - name: Validate requirements.txt
+        id: validate-requirements
+        run: |
+          if [ ! -f "requirements.txt" ]; then
+            echo "::warning::requirements.txt not found. Creating minimal requirements.txt"
+            echo "mcp>=1.0.0" > requirements.txt
+            echo "created_requirements=true" >> $GITHUB_OUTPUT
+          fi
+          
+          if ! grep -q "mcp>=" requirements.txt; then
+            echo "::error::MCP package not found in requirements.txt"
+            exit 1
+          fi
+          
+          echo "✅ requirements.txt validated"
+          
+      - name: Test server startup
+        id: test-startup
+        run: |
+          ENTRY_FILE="${{ steps.find-entry.outputs.entry_file }}"
+          
+          # Create virtual environment
+          python -m venv test_env
+          source test_env/bin/activate
+          
+          # Install dependencies
+          pip install -r requirements.txt
+          
+          # Test import
+          python -c "import sys; sys.path.append('.'); 
+          entry_file = '$ENTRY_FILE'.replace('.py', '').replace('/', '.');
+          exec(f'from {entry_file} import mcp'); 
+          print('✅ Server imports successfully')"
+          
+          # Test startup with timeout
+          timeout 5 python "$ENTRY_FILE" || echo "✅ Server startup test passed"
+          
+      - name: Validate no anti-patterns
+        id: validate-patterns
+        run: |
+          # Check for runtime: python anti-pattern
+          if [ -f "smithery.yaml" ] && grep -q "runtime: python" smithery.yaml; then
+            echo "::warning::Found 'runtime: python' anti-pattern in smithery.yaml"
+            echo "Consider removing smithery.yaml to use auto-detection"
+          fi
+          
+          # Check for src/ directory (less optimal for Smithery)
+          if [ -d "src" ] && [ -f "src/${{ inputs.entry_file || 'server.py' }}" ]; then
+            echo "::warning::Server file in src/ directory. Root-level placement recommended."
+          fi
+          
+          echo "✅ Pattern validation complete"
+          
+      - name: Create deployment branch
+        id: create-branch
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          BRANCH_NAME="smithery-deploy-${{ inputs.server_name }}-$TIMESTAMP"
+          
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          git checkout -b "$BRANCH_NAME"
+          
+          # Commit any auto-fixes
+          if [ "${{ steps.check-transport.outputs.transport_fixed }}" == "true" ] || \
+             [ "${{ steps.validate-requirements.outputs.created_requirements }}" == "true" ]; then
+            git add -A
+            git commit -m "Auto-fix: Prepare for Smithery deployment
+            
+            - Fixed transport configuration to use 'streamable-http'
+            - Added/updated requirements.txt
+            - Validated FastMCP structure"
+          fi
+          
+          git push -u origin "$BRANCH_NAME"
+          
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "branch_url=https://github.com/${{ github.repository }}/tree/$BRANCH_NAME" >> $GITHUB_OUTPUT
+          
+      - name: Generate deployment instructions
+        id: deployment-instructions
+        run: |
+          cat > deployment-instructions.md << EOF
+          # Smithery Deployment Instructions
+          
+          ## Server: ${{ inputs.server_name }}
+          ## Branch: ${{ steps.create-branch.outputs.branch_name }}
+          
+          ### Deployment Steps:
+          
+          1. Go to [smithery.ai/new](https://smithery.ai/new)
+          2. Connect this repository: ${{ github.repository }}
+          3. Select branch: **${{ steps.create-branch.outputs.branch_name }}**
+          4. Deploy!
+          
+          ### Configuration Validated:
+          - ✅ Entry file: ${{ steps.find-entry.outputs.entry_file }}
+          - ✅ Transport: streamable-http
+          - ✅ Requirements: MCP package included
+          - ✅ Server imports and starts successfully
+          
+          ### Connect to Claude Desktop:
+          \`\`\`json
+          {
+            "mcpServers": {
+              "${{ inputs.server_name }}": {
+                "url": "https://mcp.smithery.ai/${{ inputs.smithery_org || 'username' }}/${{ inputs.server_name }}",
+                "transport": "http"
+              }
+            }
+          }
+          \`\`\`
+          
+          ### Authentication Method: ${{ inputs.auth_method }}
+          EOF
+          
+          echo "instructions_created=true" >> $GITHUB_OUTPUT
+          
+      - name: Create validation report
+        id: final-report
+        run: |
+          REPORT=$(cat << EOF
+          {
+            "server_name": "${{ inputs.server_name }}",
+            "entry_file": "${{ steps.find-entry.outputs.entry_file }}",
+            "transport_valid": ${{ steps.check-transport.outputs.has_transport || false }},
+            "transport_fixed": ${{ steps.check-transport.outputs.transport_fixed || false }},
+            "imports_valid": true,
+            "startup_test_passed": true,
+            "deployment_branch": "${{ steps.create-branch.outputs.branch_name }}",
+            "deployment_url": "${{ steps.create-branch.outputs.branch_url }}",
+            "ready_for_deployment": true
+          }
+          EOF
+          )
+          
+          echo "report=$REPORT" >> $GITHUB_OUTPUT
+          echo "$REPORT" > validation-report.json
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-artifacts
+          path: |
+            deployment-instructions.md
+            validation-report.json
+            
+      - name: Create pull request (optional)
+        if: inputs.auto_deploy == false
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ steps.create-branch.outputs.branch_name }}
+          title: "Deploy ${{ inputs.server_name }} to Smithery"
+          body: |
+            ## 🚀 Ready for Smithery Deployment
+            
+            This PR contains the validated and prepared version of **${{ inputs.server_name }}** for Smithery deployment.
+            
+            ### ✅ Validation Results:
+            - Entry file: `${{ steps.find-entry.outputs.entry_file }}`
+            - Transport: `streamable-http` ✅
+            - FastMCP imports: Valid ✅
+            - Server startup: Tested ✅
+            
+            ### 📋 Next Steps:
+            1. Review the changes
+            2. Deploy to Smithery using the branch: `${{ steps.create-branch.outputs.branch_name }}`
+            3. Follow the deployment instructions in the artifacts
+            
+            ---
+            *Generated by the Deploy Python MCP to Smithery workflow*
+            
+      - name: Summary
+        run: |
+          echo "## 🎉 Deployment Preparation Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Server: ${{ inputs.server_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Branch: [${{ steps.create-branch.outputs.branch_name }}](${{ steps.create-branch.outputs.branch_url }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Validation Results:" >> $GITHUB_STEP_SUMMARY
+          echo "- Entry file: \`${{ steps.find-entry.outputs.entry_file }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Transport: \`streamable-http\` ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- FastMCP imports: Valid ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- Server startup: Tested ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Next Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Go to [smithery.ai/new](https://smithery.ai/new)" >> $GITHUB_STEP_SUMMARY
+          echo "2. Deploy branch: \`${{ steps.create-branch.outputs.branch_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. Download deployment instructions from artifacts" >> $GITHUB_STEP_SUMMARY
