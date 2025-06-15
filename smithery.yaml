@@ -1,1 +1,6 @@
 runtime: python
+
+startCommand:
+  type: stdio
+  command: python
+  args: ["server.py"]
