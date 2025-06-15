@@ -1,7 +1,0 @@
-startCommand:
-  type: shttp
-  commandFunction: |
-    () => ({
-      command: 'python',
-      args: ['server.py']
-    })

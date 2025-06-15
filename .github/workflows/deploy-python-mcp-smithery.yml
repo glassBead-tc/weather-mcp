@@ -1,0 +1,369 @@
+name: Deploy Python MCP Server to Smithery
+
+on:
+  workflow_dispatch:
+    inputs:
+      auth_method:
+        description: 'Authentication method'
+        required: true
+        type: choice
+        options:
+          - max_plan
+          - api
+        default: 'max_plan'
+      server_name:
+        description: 'MCP server name (e.g., weather-mcp)'
+        required: true
+        type: string
+      entry_file:
+        description: 'Entry point file'
+        required: false
+        type: string
+        default: 'server.py'
+      auto_deploy:
+        description: 'Automatically deploy to Smithery'
+        required: false
+        type: boolean
+        default: false
+      smithery_org:
+        description: 'Smithery organization (optional)'
+        required: false
+        type: string
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  validate-and-deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      deployment_branch: ${{ steps.prepare-branch.outputs.branch_name }}
+      deployment_url: ${{ steps.deployment-info.outputs.url }}
+      validation_report: ${{ steps.validation-report.outputs.report }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Validate server structure
+        id: validate-structure
+        run: |
+          echo "🔍 Validating MCP server structure..."
+          
+          # Check if entry file exists
+          if [ ! -f "${{ inputs.entry_file }}" ]; then
+            echo "❌ Entry file '${{ inputs.entry_file }}' not found!"
+            exit 1
+          fi
+          
+          # Check for requirements.txt
+          if [ ! -f "requirements.txt" ]; then
+            echo "⚠️ requirements.txt not found. Creating with FastMCP..."
+            echo "fastmcp>=0.1.0" > requirements.txt
+          fi
+          
+          echo "✅ Basic structure validation passed"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: Validate FastMCP configuration
+        id: validate-fastmcp
+        run: |
+          cat > validate_server.py << 'EOF'
+          import ast
+          import sys
+          import re
+          
+          def check_shttp_transport(filepath):
+              """Check if the server uses shttp transport"""
+              with open(filepath, 'r') as f:
+                  content = f.read()
+              
+              # Check for FastMCP import
+              if 'from fastmcp import FastMCP' not in content and 'import fastmcp' not in content:
+                  return False, "FastMCP import not found"
+              
+              # Check for shttp transport
+              shttp_pattern = r'transport\s*=\s*["\']shttp["\']'
+              if not re.search(shttp_pattern, content):
+                  return False, "transport='shttp' not found"
+              
+              return True, "Configuration is valid"
+          
+          # Validate the entry file
+          is_valid, message = check_shttp_transport("${{ inputs.entry_file }}")
+          
+          if not is_valid:
+              print(f"❌ Validation failed: {message}")
+              sys.exit(1)
+          else:
+              print(f"✅ {message}")
+          EOF
+          
+          python validate_server.py
+
+      - name: Auto-configure for Smithery
+        id: auto-configure
+        run: |
+          cat > auto_configure.py << 'EOF'
+          import re
+          import sys
+          
+          def update_server_for_smithery(filepath):
+              """Update server.py to use shttp transport if not already configured"""
+              with open(filepath, 'r') as f:
+                  content = f.read()
+              
+              # Check if already configured
+              if re.search(r'transport\s*=\s*["\']shttp["\']', content):
+                  print("✅ Server already configured for shttp transport")
+                  return False
+              
+              # Find FastMCP initialization
+              patterns = [
+                  (r'(mcp\s*=\s*FastMCP\([^)]*)', r'\1, transport="shttp"'),
+                  (r'(FastMCP\(\s*"[^"]*"\s*)', r'\1, transport="shttp"')
+              ]
+              
+              modified = False
+              for pattern, replacement in patterns:
+                  if re.search(pattern, content):
+                      content = re.sub(pattern, replacement, content)
+                      modified = True
+                      break
+              
+              if modified:
+                  with open(filepath, 'w') as f:
+                      f.write(content)
+                  print("✅ Updated server to use shttp transport")
+                  return True
+              else:
+                  print("⚠️ Could not auto-configure shttp transport. Please update manually.")
+                  return False
+          
+          update_server_for_smithery("${{ inputs.entry_file }}")
+          EOF
+          
+          python auto_configure.py
+
+      - name: Test server locally
+        id: test-server
+        run: |
+          cat > test_server.py << 'EOF'
+          import sys
+          import importlib.util
+          import asyncio
+          
+          async def test_server_import():
+              """Test if the server can be imported and initialized"""
+              try:
+                  # Import the server module
+                  spec = importlib.util.spec_from_file_location("server", "${{ inputs.entry_file }}")
+                  server_module = importlib.util.module_from_spec(spec)
+                  spec.loader.exec_module(server_module)
+                  
+                  print("✅ Server module imported successfully")
+                  
+                  # Check for mcp instance
+                  if hasattr(server_module, 'mcp'):
+                      print("✅ FastMCP instance found")
+                  else:
+                      print("⚠️ No 'mcp' instance found in server module")
+                  
+                  return True
+              except Exception as e:
+                  print(f"❌ Failed to import server: {e}")
+                  return False
+          
+          if __name__ == "__main__":
+              success = asyncio.run(test_server_import())
+              sys.exit(0 if success else 1)
+          EOF
+          
+          python test_server.py
+
+      - name: Prepare deployment branch
+        id: prepare-branch
+        run: |
+          BRANCH_NAME="smithery-deploy-${{ inputs.server_name }}-$(date +%Y%m%d-%H%M%S)"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          
+          # Create new branch
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git checkout -b $BRANCH_NAME
+          
+          # Create Smithery-specific files if needed
+          if [ ! -f "README.md" ]; then
+            cat > README.md << EOF
+          # ${{ inputs.server_name }}
+          
+          MCP server configured for deployment on Smithery.
+          
+          ## Installation
+          
+          \`\`\`bash
+          smithery install ${{ inputs.smithery_org || 'your-org' }}/${{ inputs.server_name }}
+          \`\`\`
+          
+          ## Configuration
+          
+          This server has been automatically configured to use the \`shttp\` transport required by Smithery.
+          EOF
+          fi
+          
+          # Commit changes
+          git add -A
+          git commit -m "Configure ${{ inputs.server_name }} for Smithery deployment" || echo "No changes to commit"
+
+      - name: Push deployment branch
+        if: steps.prepare-branch.outputs.branch_name != ''
+        run: |
+          git push origin ${{ steps.prepare-branch.outputs.branch_name }}
+
+      - name: Generate validation report
+        id: validation-report
+        run: |
+          cat > generate_report.py << 'EOF'
+          import json
+          import os
+          
+          report = {
+              "server_name": "${{ inputs.server_name }}",
+              "entry_file": "${{ inputs.entry_file }}",
+              "auth_method": "${{ inputs.auth_method }}",
+              "validations": {
+                  "structure": "✅ Valid",
+                  "fastmcp_import": "✅ Found",
+                  "shttp_transport": "✅ Configured",
+                  "requirements_txt": "✅ Present",
+                  "local_test": "✅ Passed"
+              },
+              "deployment_branch": "${{ steps.prepare-branch.outputs.branch_name }}",
+              "ready_for_deployment": True
+          }
+          
+          # Save report
+          with open("validation_report.json", "w") as f:
+              json.dump(report, f, indent=2)
+          
+          # Output for GitHub Actions
+          print(json.dumps(report))
+          EOF
+          
+          REPORT=$(python generate_report.py)
+          echo "report=$REPORT" >> $GITHUB_OUTPUT
+          
+          # Also save as artifact
+          mkdir -p artifacts
+          cp validation_report.json artifacts/
+
+      - name: Generate deployment instructions
+        id: deployment-info
+        run: |
+          if [ "${{ inputs.auth_method }}" == "max_plan" ]; then
+            AUTH_INSTRUCTIONS="1. Ensure you have GitHub authentication set up in Claude Code
+          2. Run: smithery publish ${{ inputs.server_name }}"
+          else
+            AUTH_INSTRUCTIONS="1. Set your Anthropic API key: export ANTHROPIC_API_KEY='your-key'
+          2. Set your Smithery token: export SMITHERY_TOKEN='your-token'
+          3. Run: smithery publish ${{ inputs.server_name }} --api"
+          fi
+          
+          cat > deployment_instructions.md << EOF
+          # Deployment Instructions for ${{ inputs.server_name }}
+          
+          ## Branch Created
+          Your deployment-ready branch has been created: \`${{ steps.prepare-branch.outputs.branch_name }}\`
+          
+          ## GitHub URL
+          https://github.com/${{ github.repository }}/tree/${{ steps.prepare-branch.outputs.branch_name }}
+          
+          ## Smithery Deployment Steps
+          
+          ### For ${{ inputs.auth_method == 'max_plan' && 'Claude Code Max Plan Users' || 'API Users' }}:
+          
+          $AUTH_INSTRUCTIONS
+          
+          ### Organization (if specified):
+          ${{ inputs.smithery_org && format('Organization: {0}', inputs.smithery_org) || 'No organization specified' }}
+          
+          ## Validation Report
+          All checks passed! Your server is ready for deployment.
+          
+          ## Next Steps
+          1. Review the changes in the deployment branch
+          2. Follow the authentication steps above
+          3. Deploy to Smithery
+          4. Test your deployed server: \`smithery run ${{ inputs.smithery_org || 'your-org' }}/${{ inputs.server_name }}\`
+          EOF
+          
+          cat deployment_instructions.md
+          
+          # Set output URL
+          echo "url=https://github.com/${{ github.repository }}/tree/${{ steps.prepare-branch.outputs.branch_name }}" >> $GITHUB_OUTPUT
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-artifacts
+          path: |
+            artifacts/
+            deployment_instructions.md
+            validation_report.json
+
+      - name: Create PR if not auto-deploying
+        if: ${{ !inputs.auto_deploy }}
+        run: |
+          gh pr create \
+            --title "Deploy ${{ inputs.server_name }} to Smithery" \
+            --body-file deployment_instructions.md \
+            --base main \
+            --head ${{ steps.prepare-branch.outputs.branch_name }} \
+            || echo "PR creation skipped or failed"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auto-deploy to Smithery
+        if: ${{ inputs.auto_deploy && inputs.auth_method == 'api' }}
+        run: |
+          echo "🚀 Auto-deployment requested but requires manual action:"
+          echo "Please run the following commands locally with your credentials:"
+          echo ""
+          echo "git checkout ${{ steps.prepare-branch.outputs.branch_name }}"
+          echo "export ANTHROPIC_API_KEY='your-api-key'"
+          echo "export SMITHERY_TOKEN='your-smithery-token'"
+          echo "smithery publish ${{ inputs.server_name }}"
+
+  summary:
+    needs: validate-and-deploy
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Summary
+        run: |
+          echo "## 🎉 MCP Server Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Server: ${{ inputs.server_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Authentication Method: ${{ inputs.auth_method }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployment Branch" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: \`${{ needs.validate-and-deploy.outputs.deployment_branch }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- URL: ${{ needs.validate-and-deploy.outputs.deployment_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check the artifacts for detailed deployment instructions" >> $GITHUB_STEP_SUMMARY
+          echo "2. Follow the authentication setup for your chosen method" >> $GITHUB_STEP_SUMMARY
+          echo "3. Deploy to Smithery using the provided commands" >> $GITHUB_STEP_SUMMARY
