@@ -48,4 +48,4 @@ def search_notes(query: str) -> Dict[str, Any]:
     return {"notes": matching_notes, "count": len(matching_notes), "query": query}
 
 if __name__ == "__main__":
-    mcp.run(transport="shttp")
+    mcp.run(transport="streamable-http")
