@@ -101,7 +101,7 @@ async def compare_weather(cities: list[str], metric: str = "temperature") -> Dic
     return {"metric": metric, "cities": comparisons}
 
 if __name__ == "__main__":
-    # Smithery requires streamable-http transport for hosted servers
-    # This is the correct transport for Smithery deployment
-    print("🌐 Using streamable-http transport for Smithery deployment")
-    mcp.run(transport="streamable-http")
+    # Smithery's build process will change "shttp" to "stdio" via sed
+    # This ensures compatibility with Smithery's deployment process
+    print("🌐 Starting weather MCP server")
+    mcp.run(transport="shttp")

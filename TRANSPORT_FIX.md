@@ -15,23 +15,24 @@
 **Fixed Configuration**:
 ```python
 if __name__ == "__main__":
-    # Smithery requires streamable-http transport for hosted servers
-    print("🌐 Using streamable-http transport for Smithery deployment")
-    mcp.run(transport="streamable-http")
+    # Smithery's build process will change "shttp" to "stdio" via sed
+    # This ensures compatibility with Smithery's deployment process
+    print("🌐 Starting weather MCP server")
+    mcp.run(transport="shttp")
 ```
 
 ## Key Points
 
-1. **Smithery is opinionated**: Requires `streamable-http` for hosted servers
+1. **Smithery Build Process**: Uses sed command to change `"shttp"` to `"stdio"` 
 2. **Lazy Loading**: Already implemented to prevent timeout during tool scanning
-3. **Build Process**: Smithery's sed command needs to be avoided or corrected
+3. **Transport Compatibility**: Code uses "shttp" which becomes "stdio" after sed
 
 ## Expected Outcome
 
-With `streamable-http` transport + lazy loading:
-- ✅ Server responds to HTTP requests for tool scanning
-- ✅ Tools load lazily to prevent timeouts
-- ✅ MCP protocol works correctly over HTTP
+With `stdio` transport (after sed) + lazy loading:
+- ✅ Server uses stdio transport as expected by Smithery
+- ✅ Tools load lazily to prevent timeouts  
+- ✅ MCP protocol works correctly over stdio
 - ✅ Tool scanning should complete successfully
 
 ## Testing

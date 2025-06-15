@@ -62,8 +62,8 @@ jobs:
         id: check-transport
         run: |
           echo "Checking transport configuration..."
-          if grep -q 'transport="streamable-http"' server.py; then
-            echo "✅ Correct transport configuration found"
+          if grep -q 'transport="shttp"' server.py; then
+            echo "✅ Correct transport configuration found (shttp -> stdio via sed)"
             echo "correct=true" >> $GITHUB_OUTPUT
           else
             echo "❌ Missing or incorrect transport configuration"
@@ -215,10 +215,10 @@ jobs:
           fi
           
           # Check transport configuration
-          if grep -q 'transport="streamable-http"' server.py; then
-            echo "✅ Correct transport configuration"
+          if grep -q 'transport="shttp"' server.py; then
+            echo "✅ Correct transport configuration (shttp -> stdio via sed)"
           else
-            echo "❌ Missing streamable-http transport"
+            echo "❌ Missing shttp transport"
             READY=false
           fi
           
