@@ -1,18 +1,1 @@
 runtime: python
-
-configSchema:
-  type: object
-  properties:
-    weather_api_url:
-      type: string
-      default: "https://wttr.in"
-
-build:
-  dockerfile: |
-    FROM python:3.11-slim
-    WORKDIR /app
-    COPY requirements.txt .
-    RUN pip install --no-cache-dir -r requirements.txt
-    COPY src/ ./src/
-    CMD ["python", "src/weather_server.py"]
-EOF < /dev/null
