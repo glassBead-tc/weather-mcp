@@ -54,4 +54,4 @@ def calculate_days_between(start_date: str, end_date: str) -> Dict[str, Any]:
         return {"error": f"Invalid date format. Use YYYY-MM-DD. Error: {str(e)}"}
 
 if __name__ == "__main__":
-    mcp.run(transport="shttp")
+    mcp.run(transport="streamable-http")
