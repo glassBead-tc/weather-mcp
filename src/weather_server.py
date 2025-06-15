@@ -75,4 +75,3 @@ async def compare_weather(cities: list[str], metric: str = "temperature") -> Dic
 
 if __name__ == "__main__":
     mcp.run()
-EOF < /dev/null
