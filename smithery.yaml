@@ -1,6 +1,0 @@
-runtime: python
-
-startCommand:
-  type: shttp
-  command: python
-  args: ["server.py"]
