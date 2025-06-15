@@ -18,7 +18,7 @@ A simple weather MCP server built with FastMCP that provides current weather dat
 
 2. **Run locally:**
    ```bash
-   python src/weather_server.py
+   python server.py
    ```
 
 3. **Test with Claude Desktop/Code:**
@@ -28,7 +28,7 @@ A simple weather MCP server built with FastMCP that provides current weather dat
      "mcpServers": {
        "weather": {
          "command": "python",
-         "args": ["/path/to/weather-mcp/src/weather_server.py"]
+         "args": ["/path/to/weather-mcp/server.py"]
        }
      }
    }
@@ -66,4 +66,3 @@ await get_weather("Tokyo", units="imperial", detailed=True)
 # Compare temperatures across cities
 await compare_weather(["New York", "Los Angeles", "Chicago"], metric="temperature")
 ```
-EOF < /dev/null
