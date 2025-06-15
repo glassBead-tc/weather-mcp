@@ -38,7 +38,7 @@ async def test_health_check_tool():
     assert result["status"] == "healthy"
     assert "timestamp" in result
     assert "server" in result
-    assert "tools" in result
+    assert "tools_available" in result
 
 @pytest.mark.asyncio
 async def test_get_weather_tool():

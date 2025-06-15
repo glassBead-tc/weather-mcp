@@ -122,28 +122,14 @@ jobs:
           ENTRY_FILE="${{ steps.find-entry.outputs.entry_file }}"
           
           # Check for valid transport configuration
-          if grep -q 'transport="streamable-http"' "$ENTRY_FILE" 2>/dev/null || \
-             grep -q "transport='streamable-http'" "$ENTRY_FILE" 2>/dev/null; then
-            echo "✅ Correct HTTP transport configured for Smithery"
+          if grep -q 'transport="shttp"' "$ENTRY_FILE" 2>/dev/null || \
+             grep -q "transport='shttp'" "$ENTRY_FILE" 2>/dev/null; then
+            echo "✅ Correct shttp transport configured (will be converted to stdio by Smithery)"
             echo "has_transport=true" >> $GITHUB_OUTPUT
           else
-            # Check for common mistakes
-            if grep -q 'transport="shttp"' "$ENTRY_FILE" 2>/dev/null || \
-               grep -q "transport='shttp'" "$ENTRY_FILE" 2>/dev/null; then
-              echo "❌ Invalid transport 'shttp' found - should be 'streamable-http'"
-              echo "has_transport=false" >> $GITHUB_OUTPUT
-              echo "::error::Invalid transport configuration: 'shttp' is not valid. Use 'streamable-http' instead."
-              
-              # Auto-fix option
-              echo "Attempting to auto-fix transport configuration..."
-              sed -i 's/transport="shttp"/transport="streamable-http"/g' "$ENTRY_FILE"
-              sed -i "s/transport='shttp'/transport='streamable-http'/g" "$ENTRY_FILE"
-              echo "transport_fixed=true" >> $GITHUB_OUTPUT
-            else
-              echo "❌ Missing HTTP transport configuration"
-              echo "has_transport=false" >> $GITHUB_OUTPUT
-              echo "::warning::Server may not work properly on Smithery without transport='streamable-http'"
-            fi
+            echo "❌ Missing shttp transport configuration"
+            echo "has_transport=false" >> $GITHUB_OUTPUT
+            echo "::warning::Server may not work properly on Smithery without shttp transport"
           fi
           
       - name: Validate requirements.txt
