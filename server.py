@@ -155,4 +155,4 @@ def generate_hash(text: str, algorithm: str = "md5") -> Dict[str, Any]:
         return {"error": f"Failed to generate hash: {str(e)}"}
 
 if __name__ == "__main__":
-    mcp.run(transport="shttp")
+    mcp.run(transport="streamable-http")
