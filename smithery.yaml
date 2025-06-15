@@ -1,0 +1,26 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      units:
+        type: string
+        description: "Default units for weather (metric/imperial)"
+        default: "metric"
+        enum: ["metric", "imperial"]
+      timeout:
+        type: number
+        description: "Request timeout in seconds"
+        default: 10
+        minimum: 5
+        maximum: 30
+    default: {}
+    description: Weather MCP server configuration
+  commandFunction:
+    |-
+    (config) => ({command: 'weather-mcp'})
+  exampleConfig:
+    units: "metric"
+    timeout: 10

@@ -1,0 +1,21 @@
+[project]
+name = "weather-mcp"
+version = "0.1.0"
+description = "MCP server for weather information"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.7.1",
+    "httpx>=0.25.0",
+    "uvicorn>=0.23.1"
+]
+
+[project.scripts]
+weather-mcp = "weather_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["weather_mcp"]
