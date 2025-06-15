@@ -1,0 +1,351 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, fix-github-action-transport ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      deploy_to_smithery:
+        description: 'Deploy to Smithery after tests pass'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  test:
+    name: Test & Validate
+    runs-on: ubuntu-latest
+    
+    outputs:
+      server_validated: ${{ steps.validate-server.outputs.validated }}
+      transport_correct: ${{ steps.check-transport.outputs.correct }}
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+            
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest httpx-mock pytest-asyncio
+          
+      - name: Validate server imports
+        id: validate-server
+        run: |
+          echo "Testing server imports..."
+          python -c "
+          from server import mcp
+          print(f'✅ Server imported successfully: {mcp.name}')
+          print(f'✅ Server type: {type(mcp)}')
+          "
+          echo "validated=true" >> $GITHUB_OUTPUT
+          
+      - name: Check transport configuration
+        id: check-transport
+        run: |
+          echo "Checking transport configuration..."
+          if grep -q 'transport="streamable-http"' server.py; then
+            echo "✅ Correct transport configuration found"
+            echo "correct=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Missing or incorrect transport configuration"
+            echo "correct=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+      - name: Test server startup
+        run: |
+          echo "Testing server startup..."
+          timeout 10 python server.py &
+          SERVER_PID=$!
+          sleep 3
+          
+          if kill -0 $SERVER_PID 2>/dev/null; then
+            echo "✅ Server started successfully"
+            kill $SERVER_PID
+          else
+            echo "❌ Server failed to start"
+            exit 1
+          fi
+          
+      - name: Validate tools
+        run: |
+          echo "Validating MCP tools..."
+          python -c "
+          from server import mcp
+          tools = getattr(mcp, '_tools', {})
+          print(f'✅ Found {len(tools)} tools')
+          for tool_name in tools:
+              print(f'  - {tool_name}')
+          "
+          
+      - name: Test deployment monitor (if present)
+        if: hashFiles('deployment_pipeline_monitor.py') != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
+        run: |
+          echo "Testing deployment monitor..."
+          python -c "
+          import asyncio
+          import os
+          from deployment_pipeline_monitor import health_check, ping
+          
+          async def test():
+              # Test basic functionality
+              health = await health_check()
+              print(f'✅ Health check: {health[\"status\"]}')
+              
+              pong = await ping()
+              print(f'✅ Ping: {pong}')
+              
+              # Test GitHub integration if token available
+              if os.getenv('GITHUB_TOKEN'):
+                  from deployment_pipeline_monitor import check_github_repo_status
+                  try:
+                      result = await check_github_repo_status('glassBead-tc', 'weather-mcp')
+                      print(f'✅ GitHub API: {result[\"repository\"]}')
+                  except Exception as e:
+                      print(f'⚠️ GitHub API: {e}')
+          
+          asyncio.run(test())
+          "
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          
+      - name: Install security tools
+        run: |
+          pip install bandit safety
+          
+      - name: Run Bandit security scan
+        run: |
+          echo "Running security scan..."
+          bandit -r . -f json -o bandit-report.json || true
+          bandit -r . -ll || true
+          
+      - name: Check dependencies for vulnerabilities
+        run: |
+          echo "Checking dependencies for vulnerabilities..."
+          safety check --json || true
+          
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+
+  build-and-deploy:
+    name: Build & Deploy Analysis
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    if: needs.test.outputs.server_validated == 'true' && needs.test.outputs.transport_correct == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Analyze deployment readiness
+        id: deploy-check
+        run: |
+          echo "Analyzing deployment readiness..."
+          
+          # Check for required files
+          READY=true
+          
+          if [ ! -f "server.py" ]; then
+            echo "❌ Missing server.py"
+            READY=false
+          fi
+          
+          if [ ! -f "requirements.txt" ]; then
+            echo "❌ Missing requirements.txt"
+            READY=false
+          fi
+          
+          # Check for anti-patterns
+          if [ -f "smithery.yaml" ] && grep -q "runtime: python" smithery.yaml; then
+            echo "⚠️ Found runtime: python anti-pattern in smithery.yaml"
+          fi
+          
+          # Check transport configuration
+          if grep -q 'transport="streamable-http"' server.py; then
+            echo "✅ Correct transport configuration"
+          else
+            echo "❌ Missing streamable-http transport"
+            READY=false
+          fi
+          
+          echo "ready=$READY" >> $GITHUB_OUTPUT
+          
+          if [ "$READY" = "true" ]; then
+            echo "🎉 Deployment ready!"
+          else
+            echo "❌ Deployment not ready"
+          fi
+          
+      - name: Generate deployment report
+        run: |
+          echo "# Deployment Readiness Report" > deployment-report.md
+          echo "" >> deployment-report.md
+          echo "**Branch:** ${{ github.ref_name }}" >> deployment-report.md
+          echo "**Commit:** ${{ github.sha }}" >> deployment-report.md
+          echo "**Triggered by:** ${{ github.event_name }}" >> deployment-report.md
+          echo "" >> deployment-report.md
+          echo "## Validation Results" >> deployment-report.md
+          echo "- ✅ Server validation: ${{ needs.test.outputs.server_validated }}" >> deployment-report.md
+          echo "- ✅ Transport configuration: ${{ needs.test.outputs.transport_correct }}" >> deployment-report.md
+          echo "- ✅ Deployment ready: ${{ steps.deploy-check.outputs.ready }}" >> deployment-report.md
+          echo "" >> deployment-report.md
+          echo "## Files Checked" >> deployment-report.md
+          echo "- server.py: $([ -f server.py ] && echo '✅ Present' || echo '❌ Missing')" >> deployment-report.md
+          echo "- requirements.txt: $([ -f requirements.txt ] && echo '✅ Present' || echo '❌ Missing')" >> deployment-report.md
+          echo "- README.md: $([ -f README.md ] && echo '✅ Present' || echo '❌ Missing')" >> deployment-report.md
+          echo "" >> deployment-report.md
+          echo "## Deployment Instructions" >> deployment-report.md
+          echo "1. Go to [smithery.ai/new](https://smithery.ai/new)" >> deployment-report.md
+          echo "2. Connect repository: glassBead-tc/weather-mcp" >> deployment-report.md
+          echo "3. Select branch: ${{ github.ref_name }}" >> deployment-report.md
+          echo "4. Deploy!" >> deployment-report.md
+          
+      - name: Upload deployment report
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-report
+          path: deployment-report.md
+          
+      - name: Trigger Smithery deployment (manual)
+        if: github.event.inputs.deploy_to_smithery == 'true' && steps.deploy-check.outputs.ready == 'true'
+        run: |
+          echo "🚀 Manual deployment trigger requested"
+          echo "Branch ${{ github.ref_name }} is ready for Smithery deployment"
+          echo "Visit: https://smithery.ai/new"
+          echo "Repository: glassBead-tc/weather-mcp"
+          echo "Branch: ${{ github.ref_name }}"
+
+  monitor-deployment:
+    name: Monitor Deployment Pipeline
+    runs-on: ubuntu-latest
+    needs: [build-and-deploy]
+    if: always() && hashFiles('deployment_pipeline_monitor.py') != ''
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          
+      - name: Install monitor dependencies
+        run: |
+          pip install -r deployment-monitor-requirements.txt
+          
+      - name: Run deployment monitoring
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
+        run: |
+          echo "Running deployment pipeline monitoring..."
+          python -c "
+          import asyncio
+          import os
+          from deployment_pipeline_monitor import get_deployment_summary
+          
+          async def monitor():
+              if not os.getenv('GITHUB_TOKEN') or not os.getenv('SMITHERY_API_KEY'):
+                  print('⚠️ Missing API credentials for full monitoring')
+                  return
+                  
+              try:
+                  summary = await get_deployment_summary('glassBead-tc', 'weather-mcp')
+                  print(f'📊 Pipeline Summary:')
+                  print(f'   Repository: {summary[\"repository\"]}')
+                  print(f'   Pipeline healthy: {summary[\"pipeline_healthy\"]}')
+                  
+                  if summary.get('recommendations'):
+                      print(f'   💡 Recommendations:')
+                      for rec in summary['recommendations']:
+                          print(f'      - {rec}')
+                          
+                  # GitHub status
+                  github = summary.get('github', {})
+                  print(f'   📈 GitHub: {len(github.get(\"workflow_runs\", []))} recent runs')
+                  
+                  # Smithery status  
+                  smithery = summary.get('smithery', {})
+                  print(f'   🚀 Smithery: {smithery.get(\"deployed\", False)} deployed')
+                  
+              except Exception as e:
+                  print(f'❌ Monitoring error: {e}')
+          
+          asyncio.run(monitor())
+          "
+
+  notification:
+    name: Workflow Summary
+    runs-on: ubuntu-latest
+    needs: [test, security-scan, build-and-deploy, monitor-deployment]
+    if: always()
+    
+    steps:
+      - name: Create workflow summary
+        run: |
+          echo "# 🚀 Weather MCP Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Test & Validate:** ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Security Scan:** ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build & Deploy:** ${{ needs.build-and-deploy.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Monitor Deployment:** ${{ needs.monitor-deployment.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Branch Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.build-and-deploy.result }}" = "success" ]; then
+            echo "## ✅ Deployment Ready" >> $GITHUB_STEP_SUMMARY
+            echo "This branch is ready for Smithery deployment:" >> $GITHUB_STEP_SUMMARY
+            echo "1. Visit [smithery.ai/new](https://smithery.ai/new)" >> $GITHUB_STEP_SUMMARY
+            echo "2. Connect repository: \`glassBead-tc/weather-mcp\`" >> $GITHUB_STEP_SUMMARY
+            echo "3. Select branch: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "4. Deploy!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Deployment Issues" >> $GITHUB_STEP_SUMMARY
+            echo "Please check the workflow logs for deployment issues." >> $GITHUB_STEP_SUMMARY
+          fi

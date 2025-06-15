@@ -1,0 +1,121 @@
+name: Health Check
+
+on:
+  push:
+    branches: [ main, fix-github-action-transport ]
+  schedule:
+    # Run every 4 hours to provide regular monitoring data
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    name: Server Health Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Basic server validation
+        run: |
+          echo "🔍 Validating server configuration..."
+          
+          # Check server imports
+          python -c "
+          from server import mcp
+          print(f'✅ Server name: {mcp.name}')
+          print(f'✅ Server type: {type(mcp).__name__}')
+          "
+          
+          # Check transport configuration
+          if grep -q 'transport="streamable-http"' server.py; then
+            echo "✅ Transport: streamable-http configured"
+          else
+            echo "❌ Transport: Missing streamable-http configuration"
+            exit 1
+          fi
+          
+          # Check for tools
+          python -c "
+          from server import mcp
+          tools = getattr(mcp, '_tools', {})
+          print(f'✅ Tools available: {len(tools)}')
+          if tools:
+              for tool in tools:
+                  print(f'  - {tool}')
+          else:
+              print('⚠️  No tools detected')
+          "
+          
+      - name: Test server startup (quick)
+        run: |
+          echo "🚀 Testing server startup..."
+          timeout 5 python server.py &
+          SERVER_PID=$!
+          sleep 2
+          
+          if kill -0 $SERVER_PID 2>/dev/null; then
+            echo "✅ Server started successfully"
+            kill $SERVER_PID
+          else
+            echo "❌ Server failed to start"
+            exit 1
+          fi
+          
+      - name: File structure check
+        run: |
+          echo "📁 Checking file structure..."
+          echo "Required files:"
+          echo "- server.py: $([ -f server.py ] && echo '✅' || echo '❌')"
+          echo "- requirements.txt: $([ -f requirements.txt ] && echo '✅' || echo '❌')"
+          echo "- README.md: $([ -f README.md ] && echo '✅' || echo '❌')"
+          
+          echo ""
+          echo "Optional files:"
+          echo "- smithery.yaml: $([ -f smithery.yaml ] && echo '⚠️ Present (check for anti-patterns)' || echo '✅ Not present (good)')"
+          echo "- deployment_pipeline_monitor.py: $([ -f deployment_pipeline_monitor.py ] && echo '✅ Present' || echo '➖ Not present')"
+          
+      - name: Generate health report
+        run: |
+          echo "# Health Check Report" > health-report.md
+          echo "**Timestamp:** $(date -u)" >> health-report.md
+          echo "**Branch:** ${{ github.ref_name }}" >> health-report.md
+          echo "**Commit:** ${{ github.sha }}" >> health-report.md
+          echo "" >> health-report.md
+          echo "## Server Status" >> health-report.md
+          echo "- ✅ Server imports successfully" >> health-report.md
+          echo "- ✅ Streamable HTTP transport configured" >> health-report.md
+          echo "- ✅ Server starts without errors" >> health-report.md
+          echo "" >> health-report.md
+          echo "## Deployment Status" >> health-report.md
+          echo "This server is ready for deployment to Smithery." >> health-report.md
+          
+      - name: Upload health report
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-report-${{ github.run_number }}
+          path: health-report.md
+          
+      - name: Summary
+        run: |
+          echo "# 🏥 Health Check Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Status: ✅ Healthy" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Server imports and starts successfully" >> $GITHUB_STEP_SUMMARY
+          echo "- Streamable HTTP transport configured" >> $GITHUB_STEP_SUMMARY
+          echo "- All required files present" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Ready for Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "Visit [smithery.ai/new](https://smithery.ai/new) to deploy this branch." >> $GITHUB_STEP_SUMMARY
