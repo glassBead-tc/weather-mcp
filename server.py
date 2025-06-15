@@ -8,4 +8,4 @@ def ping() -> str:
     return "pong"
 
 if __name__ == "__main__":
-    mcp.run(transport="shttp")
+    mcp.run(transport="streamable-http")
