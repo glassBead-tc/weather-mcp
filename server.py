@@ -269,4 +269,4 @@ def validate_data_structure(data: Dict[str, Any], schema_type: str = "basic") ->
         return {"error": f"Validation failed: {str(e)}"}
 
 if __name__ == "__main__":
-    mcp.run(transport="shttp")
+    mcp.run(transport="streamable-http")
