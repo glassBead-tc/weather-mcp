@@ -73,4 +73,4 @@ async def compare_weather(cities: list[str], metric: str = "temperature") -> Dic
     return {"metric": metric, "cities": comparisons}
 
 if __name__ == "__main__":
-    mcp.run(transport="shttp")
+    mcp.run(transport="streamable-http")
