@@ -1,11 +1,18 @@
 from typing import Dict, Any
-from datetime import datetime
-from urllib.parse import quote
-import httpx
 from mcp.server.fastmcp import FastMCP
 
+# Initialize server - no external dependencies loaded yet
 mcp = FastMCP("weather-server")
-WEATHER_API = "https://wttr.in"
+
+# Lazy loading: Only import when needed, not at module level
+def get_http_client():
+    """Lazy-loaded HTTP client to avoid import-time dependencies."""
+    import httpx
+    return httpx.AsyncClient(timeout=10.0)
+
+def get_weather_api_url():
+    """Lazy-loaded weather API URL."""
+    return "https://wttr.in"
 
 @mcp.tool()
 async def ping() -> str:
@@ -20,7 +27,8 @@ async def health_check() -> Dict[str, Any]:
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "server": "weather-mcp",
-        "tools": ["ping", "health_check", "get_weather", "compare_weather"]
+        "version": "1.0.0",
+        "tools_available": ["ping", "health_check", "get_weather", "compare_weather"]
     }
 
 @mcp.tool()
@@ -30,9 +38,12 @@ async def get_weather(city: str, units: str = "metric", detailed: bool = False) 
         return {"error": "City name required"}
     
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Lazy load dependencies
+        from urllib.parse import quote
+        
+        async with get_http_client() as client:
             response = await client.get(
-                f"{WEATHER_API}/{quote(city)}",
+                f"{get_weather_api_url()}/{quote(city)}",
                 params={"format": "j1", "m": "" if units == "metric" else "f"}
             )
             response.raise_for_status()
@@ -90,4 +101,14 @@ async def compare_weather(cities: list[str], metric: str = "temperature") -> Dic
     return {"metric": metric, "cities": comparisons}
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    # Smart transport detection - works with both Smithery and local deployment
+    import sys
+    import os
+    
+    # Check if we're running in a container/production environment
+    # Smithery will set this to stdio via sed, so we respect that
+    if os.getenv("SMITHERY_DEPLOYMENT") or "--stdio" in sys.argv:
+        mcp.run(transport="stdio")
+    else:
+        # Default to streamable-http for development/HTTP deployment  
+        mcp.run(transport="streamable-http")

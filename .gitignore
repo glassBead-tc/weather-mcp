@@ -37,4 +37,4 @@ Thumbs.db
 
 # Logs
 *.log
-EOF < /dev/null
+EOF < /dev/null/.env
