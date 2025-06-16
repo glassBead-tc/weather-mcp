@@ -1,5 +1,7 @@
 # Weather MCP Server
 
+[![smithery badge](https://smithery.ai/badge/@glassBead-tc/weather-mcp)](https://smithery.ai/server/@glassBead-tc/weather-mcp)
+
 A simple weather MCP server built with FastMCP that provides current weather data and city comparisons.
 
 ## Features
@@ -11,6 +13,15 @@ A simple weather MCP server built with FastMCP that provides current weather dat
 
 ## Quick Start
 
+### Installing via Smithery
+
+To install Weather Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@glassBead-tc/weather-mcp):
+
+```bash
+npx -y @smithery/cli install @glassBead-tc/weather-mcp --client claude
+```
+
+### Manual Installation
 1. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
